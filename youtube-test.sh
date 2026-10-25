@@ -4,6 +4,8 @@ set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+CURL_BIN=${CURL_BIN:-curl}
+export CURL_BIN
 # Worker/watchdog ignore SSH hangup explicitly, without requiring nohup.
 case "${1:-}" in --worker|--watch) trap '' 1 ;; esac
 BASE=/opt/zapret2
@@ -148,10 +150,11 @@ preflight() {
         fi
         fail 'Podkop dataplane not active; inspect Podkop before running tests (no changes made)'
     fi
-    curl --version | grep -qw HTTP3 || fail 'curl has no HTTP3; full QUIC test is impossible'
-    curl --help all | grep -q -- '--tls-max' || fail 'curl lacks TLS version control'
-    curl --help all | grep -q -- '--tlsv1.3' || fail 'curl lacks TLS1.3 option'
-    curl --version | grep -Eq 'OpenSSL|LibreSSL|BoringSSL|GnuTLS|quictls' || fail 'curl backend cannot enforce TLS1.2 maximum'
+    command -v "$CURL_BIN" >/dev/null || fail 'Selected CURL_BIN not found'
+    "$CURL_BIN" --version | grep -qw HTTP3 || fail 'Selected curl has no HTTP3; use run-http3.sh for a separate portable curl'
+    "$CURL_BIN" --help all | grep -q -- '--tls-max' || fail 'curl lacks TLS version control'
+    "$CURL_BIN" --help all | grep -q -- '--tlsv1.3' || fail 'curl lacks TLS1.3 option'
+    "$CURL_BIN" --version | grep -Eq 'OpenSSL|LibreSSL|BoringSSL|GnuTLS|quictls' || fail 'curl backend cannot enforce TLS1.2 maximum'
     if process_running nfqws; then fail 'Another DPI bypass (nfqws) is running'; fi
     # Ambiguous sections must be selected explicitly; do not edit every section.
     sections=$(uci show podkop | sed -n 's/^podkop\.\([^.=]*\)=section$/\1/p')
@@ -263,7 +266,7 @@ say 'Stopping Zapret2'
 sleep 2
 if process_running nfqws2; then fail 'nfqws2 remains; no other processes will be killed'; fi
 # Do not accept FakeIP as a DPI test destination. DNS-only check, no config edits.
-curl -4 --noproxy '*' --connect-timeout 5 --max-time 10 -sS -I -o /dev/null \
+"$CURL_BIN" -4 --noproxy '*' --connect-timeout 5 --max-time 10 -sS -I -o /dev/null \
     -w '%{remote_ip}\n' https://youtube.com > "$RUN/remote-ip" 2> "$RUN/dns-probe.log" || true
 ytip=$(cat "$RUN/remote-ip")
 case "$ytip" in 198.18.*|198.19.*|127.*|10.*|192.168.*|0.0.0.0|'') fail 'No public destination/FakeIP detected; inspect Podkop DNS/routing';; esac
@@ -273,7 +276,7 @@ case "$(cat "$RUN/youtube-route")" in *' dev tailscale0 '*|*' dev tun'*|*' dev w
 scan() {
     label=$1; testset=$2; limit=$3; t12=$4; t13=$5; h3=$6
     say "Blockcheck $label: repeats=3, successful-strategy limit=$limit"
-    env -i PATH="$PATH" BATCH=1 ZAPRET_BASE="$BASE" ZAPRET_CONFIG="$RUN/empty-config" \
+    env -i PATH="$PATH" CURL="$CURL_BIN" BATCH=1 ZAPRET_BASE="$BASE" ZAPRET_CONFIG="$RUN/empty-config" \
         DOMAINS=youtube.com IPVS=4 TEST="$testset" SCANLEVEL=force REPEATS=3 PARALLEL=0 \
         ENABLE_HTTP=0 ENABLE_HTTPS_TLS12="$t12" ENABLE_HTTPS_TLS13="$t13" ENABLE_HTTP3="$h3" \
         SKIP_DNSCHECK=0 SKIP_IPBLOCK=0 CURL_MAX_TIME=3 YT_LIMIT="$limit" \
@@ -372,7 +375,7 @@ done < "$RUN/strategy-sections"
 for tls in 1.2 1.3; do
     n=1
     while [ "$n" -le 3 ]; do
-        curl -4 --noproxy '*' --tlsv"$tls" --tls-max "$tls" --connect-timeout 5 --max-time 10 \
+        "$CURL_BIN" -4 --noproxy '*' --tlsv"$tls" --tls-max "$tls" --connect-timeout 5 --max-time 10 \
             -fsSI https://youtube.com -o /dev/null >> "$RUN/final-probe.log" 2>&1 || fail "Live TLS$tls probe failed"
         n=$((n+1))
     done
