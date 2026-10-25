@@ -4,6 +4,20 @@
 
 ## Запуск через wget в SSH-терминале роутера
 
+### Если системный curl не поддерживает HTTP3 (ARM64)
+
+```sh
+(umask 077; d=$(mktemp -d /tmp/youtube-launch.XXXXXX) || exit 1; trap 'rm -f "$d/run.sh"; rmdir "$d"' EXIT; wget -O "$d/run.sh" https://raw.githubusercontent.com/TMN88/zapret2_strategy_podbor_script/main/run-http3.sh && sh "$d/run.sh")
+```
+
+Этот запуск загружает отдельный статический curl ARM64/musl в закрытый каталог `/tmp/youtube-http3.XXXXXX`. Системные пакеты не заменяются. Источник: [stunnel/static-curl 8.23.0-1](https://github.com/stunnel/static-curl/releases/tag/8.23.0-1). Версия, SHA256 архива и бинарника закреплены в `run-http3.sh`; загрузка по HTTPS с проверкой сертификата. Сначала проверяются контрольные суммы, запуск curl и его feature HTTP3. Только затем вызывается закреплённая версия основного скрипта с `CURL_BIN`, включая Blockcheck и заключительные запросы.
+
+Нужны минимум 32 MiB свободного места в `/tmp` и `tar` с поддержкой xz. При отсутствии поддержки xz скрипт остановится до изменений; сам пакеты не устанавливает. Не удаляйте временный каталог portable curl во время тестирования: он нужен фоновому процессу даже после отключения SSH. Каталог исчезнет после перезагрузки; после завершения теста его можно удалить вручную. На ARM64-роутере эта сборка ещё не запускалась в рамках данной задачи; обязательная проверка запуска выполняется на месте.
+
+Переменная `CURL_BIN=/полный/путь/curl` также позволяет указать собственную подходящую сборку. Она наследуется фоновыми процессами. Автоматического обновления системного curl нет.
+
+### Если системный curl уже поддерживает HTTP3
+
 ```sh
 (umask 077; d=$(mktemp -d /tmp/youtube-download.XXXXXX) || exit 1; trap 'rm -f "$d/run.sh"; rmdir "$d"' EXIT; wget -O "$d/run.sh" https://raw.githubusercontent.com/TMN88/zapret2_strategy_podbor_script/main/youtube-test.sh && YT_FOLLOW=1 sh "$d/run.sh")
 ```
