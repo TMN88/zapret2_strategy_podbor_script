@@ -19,12 +19,23 @@ result() {
     printf '\033[%sm%s\033[0m\n' "$color" "$*"
 }
 hash_is() { [ "$(sha256sum "$1" | awk '{print $1}')" = "$2" ]; }
+process_running() {
+    local proc_dir proc_name
+    for proc_dir in /proc/[0-9]*; do
+        [ -r "$proc_dir/comm" ] || continue
+        IFS= read -r proc_name < "$proc_dir/comm" || continue
+        if [ "$proc_name" = "$1" ] && kill -0 "${proc_dir##*/}" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
 running() {
     case "$1" in
         podkop)
             # Podkop's start command configures sing-box/firewall and exits.
             # The procd wrapper's running state is not its dataplane health.
-            pgrep -x sing-box >/dev/null 2>&1 &&
+            process_running sing-box &&
                 nft list table inet PodkopTable >/dev/null 2>&1
             ;;
         *) /etc/init.d/"$1" running >/dev/null 2>&1 ;;
@@ -125,7 +136,7 @@ preflight() {
     [ -z "$(uci -q get zapret2.TEST || true)" ] || fail 'TEST already exists; it will not be overwritten'
     [ "$(uci -q get zapret2.main)" = zapret2 ] || fail 'Unknown Zapret2 UCI schema'
     if ! running podkop; then
-        if pgrep -x sing-box >/dev/null 2>&1; then
+        if process_running sing-box; then
             result 33 'Podkop diagnostic: sing-box process exists'
         else
             result 31 'Podkop diagnostic: sing-box process is absent'
@@ -141,7 +152,7 @@ preflight() {
     curl --help all | grep -q -- '--tls-max' || fail 'curl lacks TLS version control'
     curl --help all | grep -q -- '--tlsv1.3' || fail 'curl lacks TLS1.3 option'
     curl --version | grep -Eq 'OpenSSL|LibreSSL|BoringSSL|GnuTLS|quictls' || fail 'curl backend cannot enforce TLS1.2 maximum'
-    [ -z "$(pgrep -x nfqws || true)" ] || fail 'Another DPI bypass (nfqws) is running'
+    if process_running nfqws; then fail 'Another DPI bypass (nfqws) is running'; fi
     # Ambiguous sections must be selected explicitly; do not edit every section.
     sections=$(uci show podkop | sed -n 's/^podkop\.\([^.=]*\)=section$/\1/p')
     section=${PODKOP_SECTION:-}
@@ -250,7 +261,7 @@ running podkop || fail 'Podkop did not return'
 say 'Stopping Zapret2'
 /etc/init.d/zapret2 stop
 sleep 2
-[ -z "$(pgrep -x nfqws2 || true)" ] || fail 'nfqws2 remains; no other processes will be killed'
+if process_running nfqws2; then fail 'nfqws2 remains; no other processes will be killed'; fi
 # Do not accept FakeIP as a DPI test destination. DNS-only check, no config edits.
 curl -4 --noproxy '*' --connect-timeout 5 --max-time 10 -sS -I -o /dev/null \
     -w '%{remote_ip}\n' https://youtube.com > "$RUN/remote-ip" 2> "$RUN/dns-probe.log" || true
