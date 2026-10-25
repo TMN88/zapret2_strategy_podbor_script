@@ -19,7 +19,17 @@ result() {
     printf '\033[%sm%s\033[0m\n' "$color" "$*"
 }
 hash_is() { [ "$(sha256sum "$1" | awk '{print $1}')" = "$2" ]; }
-running() { /etc/init.d/"$1" running >/dev/null 2>&1; }
+running() {
+    case "$1" in
+        podkop)
+            # Podkop's start command configures sing-box/firewall and exits.
+            # The procd wrapper's running state is not its dataplane health.
+            pgrep -x sing-box >/dev/null 2>&1 &&
+                nft list table inet PodkopTable >/dev/null 2>&1
+            ;;
+        *) /etc/init.d/"$1" running >/dev/null 2>&1 ;;
+    esac
+}
 detach() {
     # Ignore HUP during launch; worker/watchdog also set this explicitly.
     # setsid separates the task from SSH; callers redirect all streams.
@@ -114,7 +124,19 @@ preflight() {
     [ -z "$(pgrep -f 'blockcheck2[.]sh|blockcheck_r[u]n' || true)" ] || fail 'Blockcheck already running'
     [ -z "$(uci -q get zapret2.TEST || true)" ] || fail 'TEST already exists; it will not be overwritten'
     [ "$(uci -q get zapret2.main)" = zapret2 ] || fail 'Unknown Zapret2 UCI schema'
-    running podkop || fail 'Podkop must already be configured and running'
+    if ! running podkop; then
+        if pgrep -x sing-box >/dev/null 2>&1; then
+            result 33 'Podkop diagnostic: sing-box process exists'
+        else
+            result 31 'Podkop diagnostic: sing-box process is absent'
+        fi
+        if nft list table inet PodkopTable >/dev/null 2>&1; then
+            result 33 'Podkop diagnostic: inet PodkopTable exists'
+        else
+            result 31 'Podkop diagnostic: inet PodkopTable is absent'
+        fi
+        fail 'Podkop dataplane not active; inspect Podkop before running tests (no changes made)'
+    fi
     curl --version | grep -qw HTTP3 || fail 'curl has no HTTP3; full QUIC test is impossible'
     curl --help all | grep -q -- '--tls-max' || fail 'curl lacks TLS version control'
     curl --help all | grep -q -- '--tlsv1.3' || fail 'curl lacks TLS1.3 option'
