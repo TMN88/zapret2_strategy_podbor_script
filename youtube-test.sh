@@ -4,6 +4,8 @@ set -eu
 umask 077
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+# Worker/watchdog ignore SSH hangup explicitly, without requiring nohup.
+case "${1:-}" in --worker|--watch) trap '' 1 ;; esac
 BASE=/opt/zapret2
 LOCK=/tmp/youtube-test.lock
 LISTS='geoblock block porn meta tiktok telegram cloudflare google_play'
@@ -18,6 +20,11 @@ result() {
 }
 hash_is() { [ "$(sha256sum "$1" | awk '{print $1}')" = "$2" ]; }
 running() { /etc/init.d/"$1" running >/dev/null 2>&1; }
+detach() {
+    # Ignore HUP during launch; worker/watchdog also set this explicitly.
+    # setsid separates the task from SSH; callers redirect all streams.
+    (trap '' HUP; exec setsid "$@")
+}
 restore() {
     # Only this transaction's files, never all of /etc/config or firewall ruleset.
     [ -f "$RUN/armed" ] || return 0
@@ -95,7 +102,7 @@ preflight() {
     [ -r /etc/openwrt_release ] || fail 'OpenWrt required'
     . /etc/openwrt_release
     case "$DISTRIB_RELEASE" in 24.10*|25.12*) ;; *) fail 'Only OpenWrt 24.10/25.12';; esac
-    for c in uci nft ip curl ncat sha256sum awk sed sort uniq setsid nohup flock timeout pgrep; do
+    for c in uci nft ip curl ncat sha256sum awk sed sort uniq setsid flock pgrep; do
         command -v "$c" >/dev/null || fail "Missing dependency: $c (nothing installed automatically)"
     done
     [ -x /etc/init.d/podkop ] && [ -x /etc/init.d/zapret2 ] || fail 'Podkop/Zapret2 missing'
@@ -146,7 +153,7 @@ if [ "${1:-}" != --worker ]; then
     printf '%s\n' "$section" > "$RUN/section"
     printf '%s\n' "$peer" > "$RUN/peer"
     printf '%s\n' "$peer_route" > "$RUN/route"
-    nohup setsid sh "$RUN/run.sh" --worker "$RUN" </dev/null > "$RUN/run.log" 2>&1 &
+    detach sh "$RUN/run.sh" --worker "$RUN" </dev/null > "$RUN/run.log" 2>&1 &
     result 36 "STARTED: $RUN"
     echo "Results: $RUN/status ; log: $RUN/run.log"
     trap - 0
@@ -181,7 +188,7 @@ exit_cleanup() {
     exit "$rc"
 }
 trap exit_cleanup 0
-trap 'exit 1' 1 2 15
+trap 'exit 1' 2 15
 say 'Saving backups'
 for f in podkop zapret2 dhcp sing-box; do
     [ ! -f "/etc/config/$f" ] || cp -p "/etc/config/$f" "$RUN/backup/$f"
@@ -192,7 +199,7 @@ running zapret2 && was=1
 printf '%s\n' "$was" > "$RUN/was-running"
 echo $$ > "$RUN/worker"
 touch "$RUN/armed"
-nohup setsid sh "$RUN/run.sh" --watch "$RUN" </dev/null > "$RUN/watch.log" 2>&1 &
+detach sh "$RUN/run.sh" --watch "$RUN" </dev/null > "$RUN/watch.log" 2>&1 &
 echo RUNNING > "$RUN/status"
 
 # Instrument a private copy: gracefully finish after 5 successful strategies.
